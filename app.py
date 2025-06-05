@@ -9,7 +9,7 @@ from scipy.signal import butter, filtfilt
 
 # Firebase setup
 cred = credentials.Certificate(
-    r"C:\Graduation_Project\lstm\serviceAccountKey.json"
+    r"serviceAccountKey.json"
 )
 firebase_admin.initialize_app(
     cred,
