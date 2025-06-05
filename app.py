@@ -1,6 +1,5 @@
 import os
 import json
-import base64
 import numpy as np
 import logging
 from flask import Flask, jsonify
@@ -13,36 +12,96 @@ from scipy.signal import butter, filtfilt
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Decode base64 Firebase key from environment variable
-try:
-    firebase_key_b64 = os.getenv("FIREBASE_KEY_B64")
-    if not firebase_key_b64:
-        raise EnvironmentError("FIREBASE_KEY_B64 not set in environment variables.")
-    
-    firebase_key_json = base64.b64decode(firebase_key_b64).decode("utf-8")
-    with open("firebase_key.json", "w") as f:
-        f.write(firebase_key_json)
-    logger.info("✅ Firebase key decoded successfully")
-except Exception as e:
-    logger.error(f"❌ Firebase key setup failed: {e}")
-    raise
+# Direct Firebase credential setup using JSON file
+def setup_firebase_credentials():
+    """Setup Firebase credentials by reading serviceAccountKey.json file."""
+    try:
+        # Try multiple possible file locations
+        possible_paths = [
+            "serviceAccountKey.json",
+            "./serviceAccountKey.json",
+            "/app/serviceAccountKey.json",  # Common deployment path
+            os.path.join(os.getcwd(), "serviceAccountKey.json")
+        ]
+        
+        service_account_file = None
+        for path in possible_paths:
+            if os.path.exists(path):
+                service_account_file = path
+                logger.info(f"✅ Found service account file at: {path}")
+                break
+        
+        if not service_account_file:
+            raise FileNotFoundError(f"serviceAccountKey.json not found in any of these locations: {possible_paths}")
+        
+        # Validate the JSON file
+        try:
+            with open(service_account_file, 'r') as f:
+                firebase_data = json.load(f)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in serviceAccountKey.json: {e}")
+        except Exception as e:
+            raise ValueError(f"Error reading serviceAccountKey.json: {e}")
+        
+        # Validate required fields
+        required_fields = ["type", "project_id", "private_key_id", "private_key", "client_email"]
+        missing_fields = [field for field in required_fields if field not in firebase_data]
+        if missing_fields:
+            raise ValueError(f"Missing required fields in serviceAccountKey.json: {missing_fields}")
+        
+        logger.info(f"✅ Service account validated for project: {firebase_data.get('project_id')}")
+        return service_account_file
+        
+    except Exception as e:
+        logger.error(f"❌ Firebase credential setup failed: {e}")
+        raise
 
-# Firebase initialization with error handling
+# Initialize Firebase
 try:
-    cred = credentials.Certificate("firebase_key.json")
-    firebase_admin.initialize_app(
-        cred, {"databaseURL": "https://goldencare-68364-default-rtdb.firebaseio.com/"}
-    )
-    logger.info("✅ Firebase initialized successfully")
+    firebase_cred_file = setup_firebase_credentials()
+    
+    # Initialize Firebase with the JSON file
+    cred = credentials.Certificate(firebase_cred_file)
+    firebase_admin.initialize_app(cred, {
+        "databaseURL": "https://goldencare-68364-default-rtdb.firebaseio.com/"
+    })
+    
+    # Test Firebase connection
+    logger.info("🔄 Testing Firebase connection...")
+    test_ref = db.reference("/")
+    test_ref.get()  # This will fail immediately if credentials are wrong
+    
+    logger.info("✅ Firebase initialized and tested successfully")
+    
 except Exception as e:
     logger.error(f"❌ Firebase initialization failed: {e}")
     raise
 
-# Load trained CNN model with error handling
+# Load trained CNN model
 try:
-    model = tf.keras.models.load_model("ecg_model.h5", compile=False)
+    # Try multiple possible model file locations
+    model_paths = [
+        "ecg_model.h5",
+        "./ecg_model.h5",
+        "/app/ecg_model.h5",
+        "best_ecg_model.h5",
+        "checkpoint_model2.h5"
+    ]
+    
+    model_file = None
+    for path in model_paths:
+        if os.path.exists(path):
+            model_file = path
+            logger.info(f"✅ Found model file at: {path}")
+            break
+    
+    if not model_file:
+        raise FileNotFoundError(f"Model file not found in any of these locations: {model_paths}")
+    
+    model = tf.keras.models.load_model(model_file, compile=False)
     model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
     logger.info("✅ Model loaded successfully")
+    
 except Exception as e:
     logger.error(f"❌ Model loading failed: {e}")
     model = None
@@ -57,7 +116,7 @@ CLASS_NAMES = {
 
 app = Flask(__name__)
 
-# Signal processing filter settings with error handling
+# Signal processing filter settings
 try:
     FS = 125
     LOW = 0.5
@@ -69,12 +128,12 @@ except Exception as e:
     b, a = None, None
 
 def fetch_last_two_packets():
-    """Fetch last two ECG readings with detailed error handling."""
+    """Fetch last two ECG readings."""
     try:
+        logger.info("📥 Fetching data from Firebase...")
+        
         ref = db.reference("/patients/patient_123/readings")
         nodes = ref.order_by_key().limit_to_last(2).get()
-        
-        logger.info(f"📥 Firebase query returned: {type(nodes)}")
         
         if not nodes:
             raise FileNotFoundError("No readings found for this patient.")
@@ -86,8 +145,6 @@ def fetch_last_two_packets():
         latest = nodes[ts[0]]
         prev = nodes[ts[1]]
         
-        logger.info(f"📊 Processing readings: {ts[0]} (latest), {ts[1]} (previous)")
-        
         # Validate data structure
         for name, packet in [("latest", latest), ("previous", prev)]:
             if not isinstance(packet, dict):
@@ -98,11 +155,8 @@ def fetch_last_two_packets():
             
             if not packet["ecg_sequence"]:
                 raise ValueError(f"'ecg_sequence' is empty in {name} packet.")
-            
-            # Log sequence info
-            seq = packet["ecg_sequence"]
-            logger.info(f"{name} ECG sequence length: {len(seq)}")
         
+        logger.info(f"✅ Data fetched successfully: {ts[0]} (latest), {ts[1]} (previous)")
         return latest, prev
         
     except Exception as e:
@@ -110,29 +164,23 @@ def fetch_last_two_packets():
         raise
 
 def make_187beat(latest, prev):
-    """Process ECG data with robust error handling."""
+    """Process ECG data."""
     try:
         logger.info("🔄 Processing ECG sequences...")
         
-        # Parse sequences with validation
+        # Parse sequences - try float first, then int
         try:
             ecg_latest = np.fromstring(latest["ecg_sequence"], sep=",", dtype=np.float32)
             ecg_prev = np.fromstring(prev["ecg_sequence"], sep=",", dtype=np.float32)
-        except ValueError as e:
-            # Try parsing as integers if float fails
-            logger.warning("⚠️ Float parsing failed, trying integer parsing")
+        except ValueError:
+            logger.info("⚠️ Float parsing failed, trying integer parsing")
             ecg_latest = np.fromstring(latest["ecg_sequence"], sep=",", dtype=np.int16).astype(np.float32)
             ecg_prev = np.fromstring(prev["ecg_sequence"], sep=",", dtype=np.int16).astype(np.float32)
         
-        logger.info(f"Parsed lengths - Latest: {len(ecg_latest)}, Previous: {len(ecg_prev)}")
+        if len(ecg_latest) == 0 or len(ecg_prev) == 0:
+            raise ValueError("One or both ECG sequences are empty after parsing.")
         
-        if len(ecg_latest) == 0:
-            raise ValueError("Latest ECG sequence is empty after parsing.")
-        
-        if len(ecg_prev) == 0:
-            raise ValueError("Previous ECG sequence is empty after parsing.")
-        
-        # Pad sequences if too short (ethical consideration handled)
+        # Pad sequences if too short
         if len(ecg_latest) < 125:
             logger.warning(f"⚠️ Latest sequence too short ({len(ecg_latest)}), padding to 125")
             ecg_latest = np.pad(ecg_latest, (0, 125 - len(ecg_latest)), mode='edge')
@@ -141,32 +189,29 @@ def make_187beat(latest, prev):
             logger.warning(f"⚠️ Previous sequence too short ({len(ecg_prev)}), padding to 125")
             ecg_prev = np.pad(ecg_prev, (0, 125 - len(ecg_prev)), mode='edge')
         
-        # Take only first 125 samples if longer
+        # Take exactly 125 samples
         ecg_latest = ecg_latest[:125]
         ecg_prev = ecg_prev[:125]
         
-        # Combine and take last 187 samples
+        # Combine and take last 187
         raw = np.concatenate([ecg_prev, ecg_latest])[-187:].astype("float32")
         
-        if len(raw) < 187:
-            raise ValueError(f"Not enough samples for 187-beat sequence: got {len(raw)}")
-        
-        # Apply filtering if available
+        # Apply filtering
         if b is not None and a is not None:
             raw = filtfilt(b, a, raw)
         else:
             logger.warning("⚠️ Skipping filtering due to filter initialization failure")
         
-        # Normalize to [-1,1]
+        # Normalize
         signal_range = raw.max() - raw.min()
         if signal_range == 0:
-            logger.warning("⚠️ Zero signal range detected, using default normalization")
+            logger.warning("⚠️ Zero signal range detected")
             beat = np.zeros_like(raw)
         else:
             beat = (raw - raw.min()) / (signal_range + 1e-7)
             beat = 2.0 * beat - 1.0
         
-        logger.info(f"✅ Signal processed successfully, shape: {beat.shape}")
+        logger.info("✅ Signal processed successfully")
         return beat.reshape(1, 187, 1)
         
     except Exception as e:
@@ -175,28 +220,16 @@ def make_187beat(latest, prev):
 
 @app.route("/predict", methods=["GET"])
 def predict():
-    """Main prediction endpoint with comprehensive error handling."""
-    logger.info("🚀 Prediction request received")
-    
-    # Check if model is loaded
+    """Main prediction endpoint."""
     if model is None:
-        logger.error("❌ Model not available")
         return jsonify({
             "error_code": 500, 
-            "error_message": "Model not loaded. Check server logs."
+            "error_message": "Model not loaded"
         }), 500
     
     try:
-        # Step 1: Fetch data
-        logger.info("Step 1: Fetching data...")
         latest, prev = fetch_last_two_packets()
-        
-        # Step 2: Process signal
-        logger.info("Step 2: Processing signal...")
         x = make_187beat(latest, prev)
-        
-        # Step 3: Run prediction
-        logger.info("Step 3: Running prediction...")
         probs = model.predict(x, batch_size=1, verbose=0)[0]
         idx = int(np.argmax(probs))
         confidence = float(probs[idx])
@@ -209,13 +242,11 @@ def predict():
         }), 200
         
     except FileNotFoundError as e:
-        logger.error(f"❌ Data not found: {e}")
         return jsonify({"error_code": 404, "error_message": str(e)}), 404
     except (KeyError, ValueError) as e:
-        logger.error(f"❌ Data validation error: {e}")
         return jsonify({"error_code": 400, "error_message": str(e)}), 400
     except Exception as e:
-        logger.error(f"❌ Unexpected error: {e}")
+        logger.error(f"❌ Prediction error: {e}")
         return jsonify({
             "error_code": 500, 
             "error_message": f"Server error: {str(e)}"
@@ -224,11 +255,33 @@ def predict():
 @app.route("/health", methods=["GET"])
 def health():
     """Health check endpoint."""
+    try:
+        # Test Firebase connection
+        ref = db.reference("/patients/patient_123/readings")
+        test_data = ref.order_by_key().limit_to_last(1).get()
+        firebase_ok = test_data is not None
+    except:
+        firebase_ok = False
+    
     return jsonify({
-        "status": "healthy",
+        "status": "healthy" if (model is not None and firebase_ok) else "degraded",
         "model_loaded": model is not None,
+        "firebase_connected": firebase_ok,
         "filter_ready": b is not None and a is not None
     }), 200
+
+@app.route("/", methods=["GET"])
+def info():
+    """API info endpoint."""
+    return jsonify({
+        "service": "ECG Classification API",
+        "status": "running",
+        "endpoints": {
+            "/predict": "GET - ECG classification",
+            "/health": "GET - Health check",
+            "/": "GET - API info"
+        }
+    })
 
 if __name__ == "__main__":
     logger.info("🚀 Starting ECG Classification API...")
