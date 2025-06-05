@@ -1,0 +1,5 @@
+Flask==2.3.2
+tensorflow==2.18.0
+numpy
+firebase-admin
+scipy
