@@ -23,8 +23,11 @@ firebase_admin.initialize_app(
     cred, {"databaseURL": "https://goldencare-68364-default-rtdb.firebaseio.com/"}
 )
 
-# Load trained CNN model
-model = tf.keras.models.load_model("ecg_model.h5")
+# Load TFLite model
+interpreter = tf.lite.Interpreter(model_path="ecg_model.tflite")
+interpreter.allocate_tensors()
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
 
 CLASS_NAMES = {
     0: "Normal (N)",
@@ -77,7 +80,7 @@ def make_187beat(latest, prev):
 
         beat = (raw - raw.min()) / (raw.max() - raw.min() + 1e-7)
         beat = 2.0 * beat - 1.0
-        return beat.reshape(1, 187, 1)
+        return beat.reshape(1, 187, 1).astype(np.float32)
 
     except Exception as e:
         raise RuntimeError(f"Signal processing failed: {str(e)}")
@@ -87,7 +90,11 @@ def predict():
     try:
         latest, prev = fetch_last_two_packets()
         x = make_187beat(latest, prev)
-        probs = model.predict(x, verbose=0)[0]
+
+        interpreter.set_tensor(input_details[0]['index'], x)
+        interpreter.invoke()
+        probs = interpreter.get_tensor(output_details[0]['index'])[0]
+
         idx = int(np.argmax(probs))
         return jsonify({
             "prediction": CLASS_NAMES[idx],
