@@ -1,3 +1,4 @@
+old
 import os
 import json
 import base64
@@ -23,11 +24,8 @@ firebase_admin.initialize_app(
     cred, {"databaseURL": "https://goldencare-68364-default-rtdb.firebaseio.com/"}
 )
 
-# Load TFLite model
-interpreter = tf.lite.Interpreter(model_path="ecg_model.tflite")
-interpreter.allocate_tensors()
-input_details = interpreter.get_input_details()
-output_details = interpreter.get_output_details()
+# Load trained CNN model
+model = tf.keras.models.load_model("ecg_model.h5")
 
 CLASS_NAMES = {
     0: "Normal (N)",
@@ -37,7 +35,7 @@ CLASS_NAMES = {
     4: "Unknown (Q)"
 }
 
-app = Flask(__name__)
+app = Flask(_name_)
 
 # Signal processing filter settings
 FS = 125
@@ -80,7 +78,7 @@ def make_187beat(latest, prev):
 
         beat = (raw - raw.min()) / (raw.max() - raw.min() + 1e-7)
         beat = 2.0 * beat - 1.0
-        return beat.reshape(1, 187, 1).astype(np.float32)
+        return beat.reshape(1, 187, 1)
 
     except Exception as e:
         raise RuntimeError(f"Signal processing failed: {str(e)}")
@@ -90,11 +88,7 @@ def predict():
     try:
         latest, prev = fetch_last_two_packets()
         x = make_187beat(latest, prev)
-
-        interpreter.set_tensor(input_details[0]['index'], x)
-        interpreter.invoke()
-        probs = interpreter.get_tensor(output_details[0]['index'])[0]
-
+        probs = model.predict(x, verbose=0)[0]
         idx = int(np.argmax(probs))
         return jsonify({
             "prediction": CLASS_NAMES[idx],
@@ -108,5 +102,5 @@ def predict():
     except Exception as e:
         return jsonify({"error_code": 500, "error_message": f"Server error: {str(e)}"}), 500
 
-if __name__ == "__main__":
+if _name_ == "_main_":
     app.run(host="0.0.0.0", port=8080)
