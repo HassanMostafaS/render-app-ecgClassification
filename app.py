@@ -24,7 +24,8 @@ firebase_admin.initialize_app(
 )
 
 # Load trained CNN model
-model = tf.keras.models.load_model("ecg_model.h5")
+# model = tf.keras.models.load_model("ecg_model.h5")
+model = tf.keras.models.load_model('ecg_model.h5', compile=False)
 
 CLASS_NAMES = {
     0: "Normal (N)",
