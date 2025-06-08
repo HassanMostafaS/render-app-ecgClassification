@@ -34,7 +34,7 @@ CLASS_NAMES = {
     4: "Unknown (Q)"
 }
 
-app = Flask(_name_)
+app = Flask(__name__)
 
 # Signal processing filter settings
 FS = 125
@@ -101,5 +101,5 @@ def predict():
     except Exception as e:
         return jsonify({"error_code": 500, "error_message": f"Server error: {str(e)}"}), 500
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
