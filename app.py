@@ -37,7 +37,7 @@ CLASS_NAMES = {
     4: "Unknown (Q)"
 }
 
-app = Flask(___name__)
+app = Flask(__name__)
 
 # Signal processing filter settings
 FS = 125
