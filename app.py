@@ -30,11 +30,11 @@ input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
 
 CLASS_NAMES = {
-    0: "Normal (N)",
-    1: "Supraventricular (S)",
-    2: "Ventricular (V)",
-    3: "Fusion (F)",
-    4: "Unknown (Q)"
+    0: "Normal",
+    1: "Supraventricular",
+    2: "Ventricular",
+    3: "Fusion",
+    4: "Unknown"
 }
 
 app = Flask(__name__)
@@ -47,7 +47,7 @@ b, a = butter(3, [LOW / (FS / 2), HIGH / (FS / 2)], btype='band')
 
 def fetch_last_two_packets():
     ref = db.reference("/patients/patient_123/readings")
-    nodes = ref.order_by_key().limit_to_last(2).get()
+    nodes = ref.order_by_key().limit_to_last(4).get()
 
     if not nodes:
         raise FileNotFoundError("No readings found for this patient.")
@@ -56,29 +56,29 @@ def fetch_last_two_packets():
         raise ValueError("Need at least 2 readings for prediction.")
 
     ts = sorted(nodes.keys(), reverse=True)
-    latest = nodes[ts[0]]
-    prev = nodes[ts[1]]
+    prev3 = nodes[ts[2]]
+    prev4 = nodes[ts[3]]
 
-    for name, packet in [("latest", latest), ("previous", prev)]:
+    for name, packet in [("prev3", prev3), ("prev4", prev4)]:
         if "ecg_sequence" not in packet:
             raise KeyError(f"Missing 'ecg_sequence' in {name} packet.")
         if not packet["ecg_sequence"]:
             raise ValueError(f"'ecg_sequence' is empty in {name} packet.")
 
-    return latest, prev
+    return prev3, prev4
 
-def make_187beat(latest, prev):
+def make_187beat(prev3, prev4):
     try:
-        ecg_latest = np.fromstring(latest["ecg_sequence"], sep=",", dtype=np.float32)
-        ecg_prev = np.fromstring(prev["ecg_sequence"], sep=",", dtype=np.float32)
+        ecg_prev3 = np.fromstring(prev3["ecg_sequence"], sep=",", dtype=np.float32)
+        ecg_prev4 = np.fromstring(prev4["ecg_sequence"], sep=",", dtype=np.float32)
 
-        raw = np.concatenate([ecg_prev, ecg_latest])[-187:].astype("float32")
+        raw = np.concatenate([ecg_prev4, ecg_prev3])[-187:].astype("float32")
         if len(raw) < 187:
             raise ValueError("Not enough samples for 187-beat sequence.")
 
-        raw = filtfilt(b, a, raw)
+        filtered = filtfilt(b, a, raw)
 
-        beat = (raw - raw.min()) / (raw.max() - raw.min() + 1e-7)
+        beat = (filtered - filtered.min()) / (filtered.max() - filtered.min() + 1e-7)
         beat = 2.0 * beat - 1.0
         return beat.reshape(1, 187, 1).astype(np.float32)
 
@@ -88,8 +88,8 @@ def make_187beat(latest, prev):
 @app.route("/predict", methods=["GET"])
 def predict():
     try:
-        latest, prev = fetch_last_two_packets()
-        x = make_187beat(latest, prev)
+        prev3, prev4 = fetch_last_two_packets()
+        x = make_187beat(prev3, prev4)
 
         interpreter.set_tensor(input_details[0]['index'], x)
         interpreter.invoke()
@@ -97,8 +97,7 @@ def predict():
 
         idx = int(np.argmax(probs))
         return jsonify({
-            "prediction": CLASS_NAMES[idx],
-            "confidence": round(float(probs[idx]), 4)
+            "prediction": CLASS_NAMES[idx]
         }), 200
 
     except FileNotFoundError as e:
